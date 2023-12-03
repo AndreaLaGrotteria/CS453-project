@@ -27,9 +27,9 @@
 
 #include "macros.h"
 
-// #include <stdatomic.h>
 #include <atomic>
-
+#include <unordered_set>
+#include <map>
 
 #define NUM_SEGMENTS 512
 #define NUM_WORDS 2048
@@ -44,8 +44,10 @@ typedef struct
 //TimeStampLock implementation
 
 class TimeStampLock{
+    private:
     std::atomic_uint64_t lock;
 
+    public:
     Lock timestamp_lock_get_value()
     {
         Lock result;
@@ -91,14 +93,13 @@ class TimeStampLock{
 };
 
 
-
-
-//Transaction implementation
-// typedef struct{
-//     bool is_ro;
-//     uint64_t read_ts, write_ts;
-    
-// } Tx;
+// Transaction implementation
+struct Tx{
+    bool is_ro;
+    uint64_t rv, wv;
+    std::unordered_set<void*> read_set;
+    std::map<uintptr_t, void*> write_set;
+};
 
 
 
