@@ -27,7 +27,9 @@
 
 #include "macros.h"
 
-#include <stdatomic.h>
+// #include <stdatomic.h>
+#include <atomic>
+
 
 #define NUM_SEGMENTS 512
 #define NUM_WORDS 2048
@@ -40,59 +42,63 @@ typedef struct
 } Lock;
 
 //TimeStampLock implementation
-typedef atomic_uint_least64_t TimeStampLock;
 
-TimeStampLock timestamp_lock;
+class TimeStampLock{
+    std::atomic_uint64_t lock;
 
-Lock timestamp_lock_get_value(TimeStampLock lock)
-{
-    Lock result;
-    uint64_t val = atomic_load(&lock);
-    uint64_t stamp, lock;
-    stamp = val >> 1;
-    lock = val & 1;
+    Lock timestamp_lock_get_value()
+    {
+        Lock result;
+        uint64_t val = this->lock.load();
+        uint64_t stamp, lock;
+        stamp = val >> 1;
+        lock = val & 1;
 
-    if(lock == 1) result.is_locked = true;
-    else result.is_locked = false;
-    result.stamp = stamp;
-    return result;
-}
-
-bool lock_CAS(TimeStampLock* lock, Lock old, Lock new)
-{
-    // if((stamp >> 63) == 1) throw -1;
-    uint64_t old_val = (old.stamp << 1) | old.is_locked;;
-    uint64_t new_val = (new.stamp << 1) | new.is_locked;
-    return atomic_compare_exchange_strong(lock, &old_val, new_val);
-}
-
-bool get_lock(TimeStampLock* lock){
-    // get value if unlocked by locking it and CandS
-    Lock old_value = timestamp_lock_get_value(*lock);
-    if(old_value.is_locked) return false;
-    Lock new_value = {true, old_value.stamp};
-    return lock_CAS(lock,new_value,old_value);
-}
-
-bool release_lock(TimeStampLock* lock, uint64_t stamp, bool set_new){
-    // get value if unlocked by locking it and CandS
-    Lock old_value = timestamp_lock_get_value(*lock);
-    if(!old_value.is_locked) return false;
-    if(set_new){
-        Lock new_value = {false, stamp};
-        return lock_CAS(lock,new_value,old_value);
-    } else{
-        Lock new_value = {false, old_value.stamp};
-        return lock_CAS(lock,new_value,old_value);
+        if(lock == 1) result.is_locked = true;
+        else result.is_locked = false;
+        result.stamp = stamp;
+        return result;
     }
-}
+
+    bool lock_CAS(Lock old_lock, Lock new_lock)
+    {
+        // if((stamp >> 63) == 1) throw -1;
+        uint64_t old_val = (old_lock.stamp << 1) | old_lock.is_locked;;
+        uint64_t new_val = (new_lock.stamp << 1) | new_lock.is_locked;
+        return this->lock.compare_exchange_strong(old_val, new_val);
+    }
+
+    bool get_lock(){
+        // get value if unlocked by locking it and CandS
+        Lock old_value = this->timestamp_lock_get_value();
+        if(old_value.is_locked) return false;
+        Lock new_value = {true, old_value.stamp};
+        return lock_CAS(new_value,old_value);
+    }
+
+    bool release_lock(TimeStampLock* lock, uint64_t stamp, bool set_new){
+        // get value if unlocked by locking it and CandS
+        Lock old_value = this->timestamp_lock_get_value();
+        if(!old_value.is_locked) return false;
+        if(set_new){
+            Lock new_value = {false, stamp};
+            return lock_CAS(new_value,old_value);
+        } else{
+            Lock new_value = {false, old_value.stamp};
+            return lock_CAS(new_value,old_value);
+        }
+    }
+};
+
+
+
 
 //Transaction implementation
-typedef struct{
-    bool is_ro;
-    uint64_t read_ts, write_ts;
+// typedef struct{
+//     bool is_ro;
+//     uint64_t read_ts, write_ts;
     
-} Tx;
+// } Tx;
 
 
 
