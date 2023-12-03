@@ -30,6 +30,7 @@
 #include <atomic>
 #include <unordered_set>
 #include <map>
+#include <vector>
 
 #define NUM_SEGMENTS 512
 #define NUM_WORDS 2048
@@ -110,6 +111,16 @@ struct Tx{
     uint64_t rv, wv;
     std::unordered_set<void*> read_set;
     std::map<uintptr_t, void*> write_set;
+};
+
+// Shared memory region implementation
+struct MemoryRegion{
+    MemoryRegion(size_t size, size_t align) : size(size), align(align), allocated_segments(2), segments(NUM_SEGMENTS, std::vector<WordLock>(NUM_WORDS)) {}
+    size_t size, align;
+    // number of allocated segments 
+    std::atomic<uint64_t> allocated_segments;
+    // contains all the segments, each segment made up of words
+    std::vector<std::vector<WordLock>> segments;
 };
 
 
