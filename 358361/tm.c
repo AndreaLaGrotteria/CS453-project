@@ -27,6 +27,70 @@
 
 #include "macros.h"
 
+#include <stdatomic.h>
+
+#define NUM_SEGMENTS 512
+#define NUM_WORDS 2048
+
+//Generic Lock implementation
+typedef struct
+{
+    bool is_locked;
+    uint64_t stamp;
+} Lock;
+
+
+//TimeStampLock implementation
+typedef atomic_uint_least64_t TimeStampLock;
+
+TimeStampLock timestamp_lock;
+
+Lock timestamp_lock_get_value(TimeStampLock lock)
+{
+    Lock result;
+    uint64_t val = atomic_load(&lock);
+    uint64_t stamp, lock;
+    stamp = val >> 1;
+    lock = val & 1;
+
+    if(lock == 1) result.is_locked = true;
+    else result.is_locked = false;
+    result.stamp = stamp;
+    return result;
+}
+
+bool lock_CAS(TimeStampLock* lock, Lock old, Lock new)
+{
+    // if((stamp >> 63) == 1) throw -1;
+    uint64_t old_val = (old.stamp << 1) | old.is_locked;;
+    uint64_t new_val = (new.stamp << 1) | new.is_locked;
+    return atomic_compare_exchange_strong(lock, &old_val, new_val);
+}
+
+bool get_lock(TimeStampLock* lock){
+    // get value if unlocked by locking it and CandS
+    Lock old_value = timestamp_lock_get_value(*lock);
+    if(old_value.is_locked) return false;
+    Lock new_value = {true, old_value.stamp};
+    return lock_CAS(lock,new_value,old_value);
+}
+
+bool release_lock(TimeStampLock* lock, uint64_t stamp, bool set_new){
+    // get value if unlocked by locking it and CandS
+    Lock old_value = timestamp_lock_get_value(*lock);
+    if(!old_value.is_locked) return false;
+    if(set_new){
+        Lock new_value = {false, stamp};
+        return lock_CAS(lock,new_value,old_value);
+    } else{
+        Lock new_value = {false, old_value.stamp};
+        return lock_CAS(lock,new_value,old_value);
+    }
+}
+
+
+
+
 /** Create (i.e. allocate + init) a new shared memory region, with one first non-free-able allocated segment of the requested size and alignment.
  * @param size  Size of the first shared segment of memory to allocate (in bytes), must be a positive multiple of the alignment
  * @param align Alignment (in bytes, must be a power of 2) that the shared memory region must support
