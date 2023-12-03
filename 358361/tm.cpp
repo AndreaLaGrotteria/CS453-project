@@ -48,6 +48,11 @@ class TimeStampLock{
     std::atomic_uint64_t lock;
 
     public:
+    TimeStampLock() : lock(0) {}
+    TimeStampLock(const TimeStampLock &timestamp) { 
+        lock = timestamp.lock.load(); 
+    }
+
     Lock timestamp_lock_get_value()
     {
         Lock result;
@@ -90,6 +95,12 @@ class TimeStampLock{
             return lock_CAS(new_value,old_value);
         }
     }
+};
+
+struct WordLock{
+    WordLock() : lock(), id(0) {};
+    TimeStampLock lock;
+    uint64_t id;
 };
 
 
