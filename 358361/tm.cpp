@@ -59,6 +59,11 @@ class TimeStampLock{
         lock = timestamp.lock.load(); 
     }
 
+    /**
+     * @brief Get the value of the lock
+     * 
+     * @return Lock object
+     */
     Lock timestamp_lock_get_value()
     {
         Lock result;
@@ -73,6 +78,14 @@ class TimeStampLock{
         return result;
     }
 
+    /**
+     * @brief Compare and swap the lock
+     * 
+     * @param old_lock Old lock value
+     * @param new_lock New lock value
+     * @return true if CAS was successful
+     * @return false if CAS was not successful
+     */
     bool lock_CAS(Lock old_lock, Lock new_lock)
     {
         // if((stamp >> 63) == 1) throw -1;
@@ -81,6 +94,12 @@ class TimeStampLock{
         return this->lock.compare_exchange_strong(old_val, new_val);
     }
 
+    /**
+     * @brief Acquire the lock 
+     * 
+     * @return true if lock was acquired
+     * @return false if lock was not acquired
+     */
     bool get_lock(){
         // get value if unlocked by locking it and CandS
         Lock old_value = this->timestamp_lock_get_value();
@@ -89,6 +108,15 @@ class TimeStampLock{
         return lock_CAS(new_value,old_value);
     }
 
+    /**
+     * @brief Release the lock
+     * 
+     * @param lock Lock to release
+     * @param stamp Timestamp to set 
+     * @param set_new 
+     * @return true 
+     * @return false 
+     */
     bool release_lock(TimeStampLock* lock, uint64_t stamp, bool set_new){
         // get value if unlocked by locking it and CandS
         Lock old_value = this->timestamp_lock_get_value();
@@ -119,7 +147,7 @@ struct Tx{
     std::map<uintptr_t, void*> write_set;
 };
 
-// Shared memory region implementation
+// MemoryRegion implementation
 struct MemoryRegion{
     MemoryRegion(size_t size, size_t align) : size(size), align(align), allocated_segments(2), segments(NUM_SEGMENTS, std::vector<WordLock>(NUM_WORDS)) {}
     size_t size, align;
@@ -194,6 +222,16 @@ bool tm_end(shared_t unused(shared), tx_t unused(tx)) {
     return false;
 }
 
+/** [thread-safe] Translate a target address to a segment index and a word index.
+ * @param shared Shared memory region associated with the transaction
+ * @param target Target address to translate
+ * @return Pair of segment index and word index
+**/
+std::pair<uint64_t,uint64_t> translate_address(size_t align, uintptr_t target){
+    std::pair<uint64_t,uint64_t> ret(target >> 32, ((target << 32)>>32) / align);
+    return ret;
+}
+
 /** [thread-safe] Read operation in the given transaction, source in the shared region and target in a private region.
  * @param shared Shared memory region associated with the transaction
  * @param tx     Transaction to use
@@ -202,9 +240,37 @@ bool tm_end(shared_t unused(shared), tx_t unused(tx)) {
  * @param target Target start address (in a private region)
  * @return Whether the whole transaction can continue
 **/
-bool tm_read(shared_t unused(shared), tx_t unused(tx), void const* unused(source), size_t unused(size), void* unused(target)) {
-    // TODO: tm_read(shared_t, tx_t, void const*, size_t, void*)
-    return false;
+bool tm_read(shared_t shared, tx_t tx, void const* source, size_t size, void* target) {
+    size_t align = tm_align(shared);
+    Tx *tx_ptr = (Tx*)tx;
+    
+    for(int i=0; i<size/align; i++){
+        uintptr_t target_w = (uintptr_t)target + i*align;
+        uintptr_t source_w = (uintptr_t)source + i*align;
+        std::pair<uint64_t,uint64_t> address = translate_address(align, source_w);
+
+        //If the transaction is not read only, check if the word is in the write set and if yes update value. Also add to read set
+        if(!tx_ptr->is_ro){
+            auto w = tx_ptr->write_set.find(source_w);
+            if(w != tx_ptr->write_set.end()){
+                memcpy((void*)target_w, w->second, align);
+                continue;
+            }
+
+            tx_ptr->read_set.insert((void*)source_w);
+        }
+        
+        WordLock *lock = &(((MemoryRegion*)shared)->segments[address.first][address.second]);
+        Lock old_value = lock->lock.timestamp_lock_get_value();
+        memcpy((void*)target_w, (void*)source_w, align);
+        Lock new_value = lock->lock.timestamp_lock_get_value();
+
+        if(new_value.is_locked || old_value.stamp != new_value.stamp || new_value.stamp > tx_ptr->rv){
+            return false;
+        }
+    }
+
+    return true;
 }
 
 /** [thread-safe] Write operation in the given transaction, source in a private region and target in the shared region.
