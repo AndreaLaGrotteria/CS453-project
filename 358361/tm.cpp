@@ -317,6 +317,5 @@ alloc_t tm_alloc(shared_t shared, tx_t unused(tx), size_t unused(size), void** t
  * @return Whether the whole transaction can continue
 **/
 bool tm_free(shared_t unused(shared), tx_t unused(tx), void* unused(target)) {
-    // TODO: tm_free(shared_t, tx_t, void*)
-    return false;
+    return true;
 }
