@@ -304,9 +304,10 @@ bool tm_write(shared_t shared, tx_t tx, void const* source, size_t size, void* t
  * @param target Pointer in private memory receiving the address of the first byte of the newly allocated, aligned segment
  * @return Whether the whole transaction can continue (success/nomem), or not (abort_alloc)
 **/
-alloc_t tm_alloc(shared_t unused(shared), tx_t unused(tx), size_t unused(size), void** unused(target)) {
-    // TODO: tm_alloc(shared_t, tx_t, size_t, void**)
-    return abort_alloc;
+alloc_t tm_alloc(shared_t shared, tx_t unused(tx), size_t unused(size), void** target) {
+    MemoryRegion *region = (MemoryRegion*)shared;
+    *target = (void*)(region->allocated_segments.fetch_add(1) << 32);
+    return success_alloc;
 }
 
 /** [thread-safe] Memory freeing in the given transaction.
