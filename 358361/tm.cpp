@@ -35,15 +35,19 @@
 #define NUM_SEGMENTS 512
 #define NUM_WORDS 2048
 
+//Global vars
+static std::atomic_uint timestamp_global{0};
+
+//Thread vars
+
+
 //Generic Lock implementation
-typedef struct
-{
+struct Lock{
     bool is_locked;
     uint64_t stamp;
-} Lock;
+};
 
 //TimeStampLock implementation
-
 class TimeStampLock{
     private:
     std::atomic_uint64_t lock;
@@ -107,6 +111,7 @@ struct WordLock{
 
 // Transaction implementation
 struct Tx{
+    Tx(bool is_ro) : is_ro(is_ro), rv(0), wv(0) {};
     bool is_ro;
     uint64_t rv, wv;
     std::unordered_set<void*> read_set;
@@ -124,22 +129,22 @@ struct MemoryRegion{
 };
 
 
-
 /** Create (i.e. allocate + init) a new shared memory region, with one first non-free-able allocated segment of the requested size and alignment.
  * @param size  Size of the first shared segment of memory to allocate (in bytes), must be a positive multiple of the alignment
  * @param align Alignment (in bytes, must be a power of 2) that the shared memory region must support
  * @return Opaque shared memory region handle, 'invalid_shared' on failure
 **/
-shared_t tm_create(size_t unused(size), size_t unused(align)) {
-    // TODO: tm_create(size_t, size_t)
-    return invalid_shared;
+shared_t tm_create(size_t size, size_t align) {
+    MemoryRegion* region = new MemoryRegion(size, align);
+    if(unlikely(region == NULL)) return invalid_shared;
+    return region;
 }
 
 /** Destroy (i.e. clean-up + free) a given shared memory region.
  * @param shared Shared memory region to destroy, with no running transaction
 **/
-void tm_destroy(shared_t unused(shared)) {
-    // TODO: tm_destroy(shared_t)
+void tm_destroy(shared_t shared) {
+    delete (MemoryRegion*) shared;
 }
 
 /** [thread-safe] Return the start address of the first allocated segment in the shared memory region.
@@ -147,26 +152,23 @@ void tm_destroy(shared_t unused(shared)) {
  * @return Start address of the first allocated segment
 **/
 void* tm_start(shared_t unused(shared)) {
-    // TODO: tm_start(shared_t)
-    return NULL;
+    return (void *)((uint64_t)1 << 32);
 }
 
 /** [thread-safe] Return the size (in bytes) of the first allocated segment of the shared memory region.
  * @param shared Shared memory region to query
  * @return First allocated segment size
 **/
-size_t tm_size(shared_t unused(shared)) {
-    // TODO: tm_size(shared_t)
-    return 0;
+size_t tm_size(shared_t shared) {
+    return ((MemoryRegion*) shared)->size;
 }
 
 /** [thread-safe] Return the alignment (in bytes) of the memory accesses on the given shared memory region.
  * @param shared Shared memory region to query
  * @return Alignment used globally
 **/
-size_t tm_align(shared_t unused(shared)) {
-    // TODO: tm_align(shared_t)
-    return 0;
+size_t tm_align(shared_t shared) {
+    return ((MemoryRegion*) shared)->align;
 }
 
 /** [thread-safe] Begin a new transaction on the given shared memory region.
@@ -175,8 +177,10 @@ size_t tm_align(shared_t unused(shared)) {
  * @return Opaque transaction ID, 'invalid_tx' on failure
 **/
 tx_t tm_begin(shared_t unused(shared), bool unused(is_ro)) {
-    // TODO: tm_begin(shared_t)
-    return invalid_tx;
+    Tx* tx = new Tx(is_ro);
+    if(unlikely(tx == NULL)) return invalid_tx;
+    tx->rv = timestamp_global.load();
+    return (tx_t)tx;
 }
 
 /** [thread-safe] End the given transaction.
