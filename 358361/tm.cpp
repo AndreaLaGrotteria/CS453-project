@@ -267,8 +267,10 @@ bool tm_end(shared_t unused(shared), tx_t unused(tx)) {
     for(auto it = tx_ptr->write_set.begin(); it != tx_ptr->write_set.end(); it++){
         std::pair<uint64_t,uint64_t> address = translate_address(region->align, it->first);
         WordLock *word_lock = &((region)->segments[address.first][address.second]);
+        //copies new value
         memcpy((void*)word_lock->id, it->second, region->align);
-
+        //releases lock and updates version
+        word_lock->lock.release_lock(tx_ptr->wv, true);
     }
     return true;
 }
