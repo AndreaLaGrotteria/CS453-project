@@ -31,6 +31,7 @@
 #include <unordered_set>
 #include <map>
 #include <vector>
+#include <string.h>
 
 #define NUM_SEGMENTS 512
 #define NUM_WORDS 2048
@@ -214,9 +215,20 @@ bool tm_read(shared_t unused(shared), tx_t unused(tx), void const* unused(source
  * @param target Target start address (in the shared region)
  * @return Whether the whole transaction can continue
 **/
-bool tm_write(shared_t unused(shared), tx_t unused(tx), void const* unused(source), size_t unused(size), void* unused(target)) {
-    // TODO: tm_write(shared_t, tx_t, void const*, size_t, void*)
-    return false;
+bool tm_write(shared_t shared, tx_t tx, void const* source, size_t size, void* target) {
+    size_t align = tm_align(shared);
+    Tx *tx_ptr = (Tx*)tx;
+
+    for(size_t i=0; i<size/align; i++){
+        uintptr_t target_w = (uintptr_t)target + i*align;
+        uintptr_t source_w = (uintptr_t)source + i*align;
+        
+        void *tmp = malloc(align);
+        memcpy(tmp, (void*)source_w, align);
+        tx_ptr->write_set[target_w] = tmp;
+    }
+
+    return true;
 }
 
 /** [thread-safe] Memory allocation in the given transaction.
