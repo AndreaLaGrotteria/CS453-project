@@ -39,8 +39,6 @@
 //Global vars
 static std::atomic_uint timestamp_global{0};
 
-//Thread vars
-
 
 //Generic Lock implementation
 struct Lock{
@@ -117,7 +115,7 @@ class TimeStampLock{
      * @return true 
      * @return false 
      */
-    bool release_lock(TimeStampLock* lock, uint64_t stamp, bool set_new){
+    bool release_lock(uint64_t stamp, bool set_new){
         // get value if unlocked by locking it and CandS
         Lock old_value = this->timestamp_lock_get_value();
         if(!old_value.is_locked) return false;
@@ -212,14 +210,67 @@ tx_t tm_begin(shared_t unused(shared), bool unused(is_ro)) {
     return (tx_t)tx;
 }
 
+/** Release the locks on the write set
+ * 
+ * @param tx_ptr Transaction pointer
+ * @param region Memory region
+ * @param end End of the write set
+ */
+void release_locks(Tx *tx_ptr, MemoryRegion *region, std::map<uintptr_t, void*>::iterator end){
+    for(auto it = tx_ptr->write_set.begin(); it != end; it++){
+        std::pair<uint64_t,uint64_t> address = translate_address(region->align, it->first);
+        WordLock *word_lock = &((region)->segments[address.first][address.second]);
+        word_lock->lock.release_lock(0, false);
+    }
+}
+
 /** [thread-safe] End the given transaction.
  * @param shared Shared memory region associated with the transaction
  * @param tx     Transaction to end
  * @return Whether the whole transaction committed
 **/
 bool tm_end(shared_t unused(shared), tx_t unused(tx)) {
-    // TODO: tm_end(shared_t, tx_t)
-    return false;
+    Tx *tx_ptr = (Tx*)tx;
+    MemoryRegion* region = (MemoryRegion*)shared;
+
+    if(tx_ptr->is_ro || tx_ptr->write_set.empty()){
+        return true;
+    }
+
+    //Acquire locks on the write_set
+    for(auto it = tx_ptr->write_set.begin(); it != tx_ptr->write_set.end(); it++){
+        std::pair<uint64_t,uint64_t> address = translate_address(region->align, it->first);
+        WordLock *word_lock = &((region)->segments[address.first][address.second]);
+        //TODO: add bounded spinlock
+        if(!word_lock->lock.get_lock()){
+            release_locks(tx_ptr, region, it);
+            return false;
+        }
+    }
+
+    tx_ptr->wv = timestamp_global.fetch_add(1) + 1;
+
+    //Validate read set
+    if(tx_ptr->rv != tx_ptr->wv +1){
+        for(auto word : tx_ptr->read_set){
+            std::pair<uint64_t,uint64_t> address = translate_address(region->align, (uintptr_t)word);
+            WordLock *word_lock = &(((MemoryRegion*)shared)->segments[address.first][address.second]);
+            if(!word_lock->lock.timestamp_lock_get_value().is_locked || 
+                word_lock->lock.timestamp_lock_get_value().stamp > tx_ptr->rv){
+                release_locks(tx_ptr, region, tx_ptr->write_set.end());
+                return false;
+            }
+        }
+    }
+
+    //Commit and release locks
+    for(auto it = tx_ptr->write_set.begin(); it != tx_ptr->write_set.end(); it++){
+        std::pair<uint64_t,uint64_t> address = translate_address(region->align, it->first);
+        WordLock *word_lock = &((region)->segments[address.first][address.second]);
+        memcpy((void*)word_lock->id, it->second, region->align);
+
+    }
+    return true;
 }
 
 /** [thread-safe] Translate a target address to a segment index and a word index.
