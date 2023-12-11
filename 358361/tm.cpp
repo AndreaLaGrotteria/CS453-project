@@ -29,12 +29,17 @@
 #define NUM_SEGMENTS 512
 #define NUM_WORDS 2048
 
+// Global timestamp
+static std::atomic_uint timestamp_global(0);
+
+// Local transaction structure
+static thread_local Tx local_tx;
+
 // auxiliar structure used in the TimestampLock class
 struct Lock {
     bool is_locked;
     uint64_t stamp, lock;
 };
-
 
 class TimestampLock {
 private:
@@ -88,7 +93,7 @@ public:
   }
 };
 
-// this is the tx_t identifier for a transaction
+// Transaction implementation
 struct Tx{
     bool is_ro;
     // RV, WV
@@ -97,14 +102,13 @@ struct Tx{
     std::map<uintptr_t, void*> write_set;
 };
 
-// instantiate one instance of a TimeStamp lock for every word
 struct WordLock{
     WordLock() : lock(), word_id(0) {}
     TimestampLock lock;
     uint64_t word_id;
 };
 
-// shared_t identifier for a region
+// MemoryRegion implementation
 struct MemoryRegion{
     MemoryRegion(size_t size, size_t align) : size(size), allocated_segments(2), align(align), segments(NUM_SEGMENTS, std::vector<WordLock>(NUM_WORDS)) {}
     size_t size, align;
@@ -113,18 +117,21 @@ struct MemoryRegion{
     std::vector<std::vector<WordLock>> segments;
 };
 
-// generates new timestamp atomically
-static std::atomic_uint timestamp_global(0);
-// each thread as a unique Tx and it gets initialized anew after every txn
-static thread_local Tx local_tx;
 
-
-// provided with a ptr to the shared memory it recovers the address of the segment and the word by making use of the first 32 bits and last 32 bits
+/** [thread-safe] Translate a target address to a segment index and a word index.
+ * @param shared Shared memory region associated with the transaction
+ * @param target Target address to translate
+ * @return Pair of segment index and word index
+**/
 std::pair<uint64_t,uint64_t> translate_address(size_t align, uintptr_t target){
     std::pair<uint64_t,uint64_t> result(target >> 32, ((target << 32)>>32) / align);
     return result;
 }
 
+
+/** Initialize a new transaction
+ * 
+ */
 void init_transaction(){
     // clear sets, free words in write set, set timestamps to 0 for reads, set readonly to false
     local_tx.read_set.clear();
@@ -137,31 +144,53 @@ void init_transaction(){
     local_tx.is_ro = false;
 }
 
+/** Create (i.e. allocate + init) a new shared memory region, with one first non-free-able allocated segment of the requested size and alignment.
+ * @param size  Size of the first shared segment of memory to allocate (in bytes), must be a positive multiple of the alignment
+ * @param align Alignment (in bytes, must be a power of 2) that the shared memory region must support
+ * @return Opaque shared memory region handle, 'invalid_shared' on failure
+**/
 shared_t tm_create(size_t size, size_t align) noexcept {
-    // initialize memory region
     MemoryRegion* shared = new struct MemoryRegion(size,align);
     if(unlikely(!shared)) return invalid_shared;
     return shared;
 }
 
+/** Destroy (i.e. clean-up + free) a given shared memory region.
+ * @param shared Shared memory region to destroy, with no running transaction
+**/
 void tm_destroy(shared_t shared) noexcept {
-    // call delete to free memory region
-  delete ((struct MemoryRegion*) shared);
+    delete ((struct MemoryRegion*) shared);
 }
 
-// the start is a static address
+/** [thread-safe] Return the start address of the first allocated segment in the shared memory region.
+ * @param shared Shared memory region to query
+ * @return Start address of the first allocated segment
+**/
 void *tm_start(shared_t unused(shared)) noexcept {
   return (void *)((uint64_t)1 << 32);
 }
 
+/** [thread-safe] Return the size (in bytes) of the first allocated segment of the shared memory region.
+ * @param shared Shared memory region to query
+ * @return First allocated segment size
+**/
 size_t tm_size(shared_t shared) noexcept {
   return ((struct MemoryRegion*)shared)->size;
 }
 
+/** [thread-safe] Return the alignment (in bytes) of the memory accesses on the given shared memory region.
+ * @param shared Shared memory region to query
+ * @return Alignment used globally
+**/
 size_t tm_align(shared_t shared) noexcept {
   return ((struct MemoryRegion*)shared)->align;
 }
 
+/** [thread-safe] Begin a new transaction on the given shared memory region.
+ * @param shared Shared memory region to start a transaction on
+ * @param is_ro  Whether the transaction is read-only
+ * @return Opaque transaction ID, 'invalid_tx' on failure
+**/
 tx_t tm_begin(shared_t unused(shared), bool is_ro) noexcept {
     // get new value of read stamp, set readonly
     local_tx.read = timestamp_global.load();
@@ -169,6 +198,14 @@ tx_t tm_begin(shared_t unused(shared), bool is_ro) noexcept {
     return (uintptr_t)&local_tx;   
 }
 
+/** [thread-safe] Write operation in the given transaction, source in a private region and target in the shared region.
+ * @param shared Shared memory region associated with the transaction
+ * @param tx     Transaction to use
+ * @param source Source start address (in a private region)
+ * @param size   Length to copy (in bytes), must be a positive multiple of the alignment
+ * @param target Target start address (in the shared region)
+ * @return Whether the whole transaction can continue
+**/
 bool tm_write(shared_t shared, tx_t unused(tx), void const *source, size_t size,
               void *target) noexcept {
 
@@ -186,6 +223,14 @@ bool tm_write(shared_t shared, tx_t unused(tx), void const *source, size_t size,
     return true;
 }
 
+/** [thread-safe] Read operation in the given transaction, source in the shared region and target in a private region.
+ * @param shared Shared memory region associated with the transaction
+ * @param tx     Transaction to use
+ * @param source Source start address (in the shared region)
+ * @param size   Length to copy (in bytes), must be a positive multiple of the alignment
+ * @param target Target start address (in a private region)
+ * @return Whether the whole transaction can continue
+**/
 bool tm_read(shared_t shared, tx_t unused(tx), void const *source, size_t size,
              void *target) noexcept {
     size_t align = tm_align(shared);
@@ -241,6 +286,11 @@ void release_locks(MemoryRegion *region, std::pair<const uintptr_t, void *> &end
     }
 }
 
+/** [thread-safe] End the given transaction.
+ * @param shared Shared memory region associated with the transaction
+ * @param tx     Transaction to end
+ * @return Whether the whole transaction committed
+**/
 bool tm_end(shared_t shared, tx_t unused(tx)) noexcept{
     // printf("Committing transaction %ld\n",local_tx.write);
 
@@ -258,9 +308,9 @@ bool tm_end(shared_t shared, tx_t unused(tx)) noexcept{
     for(auto & elem : local_tx.write_set){
         std::pair<uint64_t,uint64_t> address = translate_address(region->align, elem.first);
         WordLock *word_lock = &((region)->segments[address.first][address.second]);
-        //TODO: add bounded spinlock
         int i=0;
         bool got_lock = word_lock->lock.get_lock();
+        //Bounded spinlock
         while(!got_lock){
             if(i++ > 100000){
                 release_locks(region, elem);
@@ -307,14 +357,25 @@ bool tm_end(shared_t shared, tx_t unused(tx)) noexcept{
     return true;
 }
 
-// add a new segment to number of segments and return that address in the first half of the ptr to point to word 0 of the segment
+/** [thread-safe] Memory allocation in the given transaction.
+ * @param shared Shared memory region associated with the transaction
+ * @param tx     Transaction to use
+ * @param size   Allocation requested size (in bytes), must be a positive multiple of the alignment
+ * @param target Pointer in private memory receiving the address of the first byte of the newly allocated, aligned segment
+ * @return Whether the whole transaction can continue (success/nomem), or not (abort_alloc)
+**/
 Alloc tm_alloc(shared_t shared, tx_t unused(tx), size_t unused(size),
                void **target) noexcept {
   *target = (void*)(((MemoryRegion*)shared)->allocated_segments.fetch_add(1) << 32);
   return Alloc::success;
 }
 
-// nothing to be done as the segments are statically allocated anyway and the constants are tuned so we never need to make space
+/** [thread-safe] Memory freeing in the given transaction.
+ * @param shared Shared memory region associated with the transaction
+ * @param tx     Transaction to use
+ * @param target Address of the first byte of the previously allocated segment to deallocate
+ * @return Whether the whole transaction can continue
+**/
 bool tm_free(shared_t unused(shared), tx_t unused(tx),
              void *unused(segment)) noexcept {
   return true;
