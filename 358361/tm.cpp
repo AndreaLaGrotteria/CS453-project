@@ -29,17 +29,14 @@
 #define NUM_SEGMENTS 512
 #define NUM_WORDS 2048
 
-// Global timestamp
-static std::atomic_uint timestamp_global(0);
-
-// Local transaction structure
-static thread_local Tx local_tx;
-
 // auxiliar structure used in the TimestampLock class
 struct Lock {
     bool is_locked;
     uint64_t stamp, lock;
 };
+
+// Global timestamp
+static std::atomic_uint timestamp_global(0);
 
 class TimestampLock {
 private:
@@ -101,6 +98,9 @@ struct Tx{
     std::unordered_set<void*> read_set;
     std::map<uintptr_t, void*> write_set;
 };
+
+// Local transaction structure
+static thread_local Tx local_tx;
 
 struct WordLock{
     WordLock() : lock(), word_id(0) {}
