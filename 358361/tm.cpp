@@ -17,7 +17,7 @@
 #include <atomic>
 #include <chrono>
 #include <iostream>
-#include <map>
+#include <unordered_map>
 #include <memory>
 #include <thread>
 #include <shared_mutex>
@@ -96,7 +96,7 @@ struct Tx{
     // RV, WV
     uint64_t read, write;
     std::unordered_set<void*> read_set;
-    std::map<uintptr_t, void*> write_set;
+    std::unordered_map<uintptr_t, void*> write_set;
 };
 
 // Local transaction structure
@@ -346,13 +346,11 @@ bool tm_end(shared_t shared, tx_t unused(tx)) noexcept{
         WordLock &lock = region->segments[adds.first][adds.second];
         memcpy(&lock.word_id,pair.second,region->align);
         lock.lock.release_lock(true,local_tx.write);
-        // if(!lock.lock.release_lock(true,local_tx.write)){
-        //     init_transaction();
-        //     return false;
-        // }
     }
+
+    // printf("Committed RW transaction - # write-set: %ld\n", local_tx.write_set.size());
+
     init_transaction();
-    // printf("Committed RW transaction\n");
 
     return true;
 }
